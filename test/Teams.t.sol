@@ -21,20 +21,12 @@ contract TeamsTest is Base {
         deployMintAndApprove2Currencies();
     }
 
-    function test_twoPlainTokens() public {
-        deployHookAside(v5()); // neither routes
-        (pool, id) = initPool(currency0, currency1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
-        addLiquidity(pool);
-        // no routing token: the slice is taken in currency0, so currency1 is the token people buy and plays White
-        trade(0, 1e18, address(0)); // currency0's team plays Black in game 0: not its turn
-        assertFalse(bid().open);
-        trade(1, 1e18, address(0)); // currency1's team: White's turn
-        assertTrue(bid().open);
-        next(12);
-        trade(0, 1e18, address(0)); // currency0's team: plays White's move and bids for Black
-        assertEq(st().ply, 1);
-        assertTrue(bid().open);
-        assertEq(st().slice, 0, "no routing token: the slice waits in currency0");
+    /// Every duel's slice buys $IMDUEL, so two tokens with no route to it (neither IMD, $IMDUEL nor routed ETH) can't
+    /// open a duel (swarm audit 2026-10-27, finding 4: their slice would have waited for good).
+    function test_twoPlainTokensCannotDuel() public {
+        deployHookAside(v5());
+        vm.expectRevert(); // NoRoute, wrapped by the pool manager
+        initPool(currency0, currency1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
     }
 
     function test_nativeEthIsATeamLikeAnyToken() public {

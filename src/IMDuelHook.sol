@@ -31,10 +31,13 @@ interface IERC20Min {
 /// game. Every buy bids for its team's next move, at a strength set by its share of the pool; the biggest owns the
 /// move, and a new top bid must beat the old one by more than 10%. A move stays open for `turnBlocks` blocks after the
 /// previous one was played; the first trade after that plays it, with the hash of the window's last block as the dice,
-/// so nobody can know a move while it can still be bid for. Its owner is paid then, in its team's token from its
-/// team's war chest.
+/// so a bidder can't know the move while it can still bid. The one exception is whoever builds that last block: it can
+/// bid in it and try several versions of it, keeping the hash whose move pays (an accepted risk; a move pays at most
+/// twice what its trade received). Its owner is paid then, in its team's token from its team's war chest.
 /// Money: 0.5% of every swap. 0.4% goes to the pool's chest worth less; 0.1% (the protocol slice) is converted into
-/// $IMDUEL in batches, half added to the main duel's $IMDUEL chest and half burned.
+/// $IMDUEL in batches, half added to the main duel's $IMDUEL chest and half burned. So every duel pairs a token with
+/// IMD, $IMDUEL or routed native ETH: one with no route to $IMDUEL can't open. A trade must swap its whole order: the
+/// fee part taken before the swap counts all of it.
 /// It implements only the callbacks its permission bits enable; the pool manager calls no others.
 contract IMDuelHook is IUnlockCallback {
     using PoolIdLibrary for PoolKey;
@@ -175,6 +178,8 @@ contract IMDuelHook is IUnlockCallback {
     error BadValue();
     error BadConfig();
     error NotEnoughGas(); // the engine ran out of gas: send the trade with more
+    error NoRoute(); // a duel pairs IMD, $IMDUEL or routed native ETH, so its slice converts into $IMDUEL
+    error PartialFill(); // the trade's price limit stopped it before its whole order traded
 
     /// Plain arguments, as the IMD launch factory passes them (launch.json): the PoolManager, the engine, IMD (the
     /// currency the main duel pairs with; native ETH for an ETH-paired launch, then with no ETH route), the IMD /
@@ -241,6 +246,8 @@ contract IMDuelHook is IUnlockCallback {
             (g.main, g.opened) = (true, uint32(block.timestamp));
             emit MainDuel(id, token);
         }
+        // every duel's slice buys $IMDUEL: one side must be IMD, $IMDUEL or native ETH with its route
+        if (!(c0 == imd || c1 == imd || c0 == imduel || c1 == imduel || (c0.isAddressZero() && ethFee != 0))) revert NoRoute();
         // the slice is taken in the side it converts from most simply: IMD, then $IMDUEL, then native ETH
         g.slice = c1 == imd ? 1 : c0 == imd ? 0 : c1 == imduel ? 1 : 0;
         _newGame(id, g);
@@ -262,7 +269,7 @@ contract IMDuelHook is IUnlockCallback {
         uint256 chestIdx = _smallerChest(id, sqrtPrice);
         int256 a = params.amountSpecified;
         int128 taken = _takeFee(id, key, _specified(params), uint256(a < 0 ? -a : a), chestIdx, g);
-        _stash(sqrtPrice, depth, chestIdx);
+        _stash(sqrtPrice, depth, chestIdx, taken);
         return (IHooks.beforeSwap.selector, toBeforeSwapDelta(taken, 0), 0);
     }
 
@@ -273,8 +280,12 @@ contract IMDuelHook is IUnlockCallback {
         _onlyManager();
         PoolId id = key.toId();
         Game storage g = games[id];
-        (uint160 sqrtPrice, uint256 liquidity, uint256 chestIdx) = _unstash();
-        uint256 unspecIdx = 1 - _specified(params);
+        (uint160 sqrtPrice, uint256 liquidity, uint256 chestIdx, int128 taken) = _unstash();
+        uint256 specIdx = _specified(params);
+        // the whole order, less the fee taken before the swap, must have traded: that fee counted all of it, so a trade
+        // its price limit stopped early would pay it on what never traded (up to 25.4% in the main duel's opening)
+        if (int256(specIdx == 0 ? delta.amount0() : delta.amount1()) != params.amountSpecified + taken) revert PartialFill();
+        uint256 unspecIdx = 1 - specIdx;
         int128 fee = _takeFee(id, key, unspecIdx, _abs(unspecIdx == 0 ? delta.amount0() : delta.amount1()), chestIdx, g);
         if (!_locked()) {
             _lock(true);
@@ -431,7 +442,7 @@ contract IMDuelHook is IUnlockCallback {
             (imdSpent, bought) = _swapClaims(_mainKey(), imd, imdIn, true);
             pile[imd.toId()] += imdIn - imdSpent; // what the main duel's price limit left waits with the IMD pile
         } else if (!(c == imduel)) {
-            return; // no route: it waits
+            return; // no slice is taken in it (every duel has a route), so there is nothing to convert
         }
         pile[id] = amount - spent;
         uint256 kept = _addChest(mainId, imduel < imd ? 0 : 1, bought - bought / 2);
@@ -550,7 +561,8 @@ contract IMDuelHook is IUnlockCallback {
     }
 
     /// Plays the side to move's move (team `mover`) at its top bid's strength. The dice are the hash of the window's
-    /// last block, which didn't exist while anyone could still bid. A move whose block hash the chain no longer serves
+    /// last block, which didn't exist while anyone could still bid, except for that block's builder (see the contract
+    /// notes). A move whose block hash the chain no longer serves
     /// (after 8,191 blocks, about a day) becomes a timeout move in this block. If the engine fails (it shouldn't), a
     /// seeded legal move is played at 0%; if that fails too, the move stays queued. An engine starved by the trade's
     /// gas limit reverts the trade, so gas estimates include the move.
@@ -784,19 +796,24 @@ contract IMDuelHook is IUnlockCallback {
         }
     }
 
-    function _stash(uint160 sqrtPrice, uint256 liquidity, uint256 chestIdx) internal {
+    /// The pool's state at the swap's start and the fee taken before it, for afterSwap. `liquidity` is a pool's uint128
+    /// and `taken` is never negative, so they share a slot.
+    function _stash(uint160 sqrtPrice, uint256 liquidity, uint256 chestIdx, int128 taken) internal {
+        uint256 fee = uint128(taken);
         assembly ("memory-safe") {
             tstore(1, or(sqrtPrice, shl(160, chestIdx)))
-            tstore(2, liquidity)
+            tstore(2, or(liquidity, shl(128, fee)))
         }
     }
 
-    function _unstash() internal view returns (uint160 sqrtPrice, uint256 liquidity, uint256 chestIdx) {
+    function _unstash() internal view returns (uint160 sqrtPrice, uint256 liquidity, uint256 chestIdx, int128 taken) {
         assembly ("memory-safe") {
             let w := tload(1)
             sqrtPrice := and(w, 0xffffffffffffffffffffffffffffffffffffffff)
             chestIdx := shr(160, w)
-            liquidity := tload(2)
+            let v := tload(2)
+            liquidity := and(v, 0xffffffffffffffffffffffffffffffff)
+            taken := shr(128, v)
         }
     }
 }

@@ -4,7 +4,8 @@ pragma solidity ^0.8.26;
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {Currency, CurrencyLibrary} from "v4-core/src/types/Currency.sol";
-import {ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
+import {ModifyLiquidityParams, SwapParams} from "v4-core/src/types/PoolOperation.sol";
+import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IMDuelHook} from "../src/IMDuelHook.sol";
 import {Base} from "./Base.sol";
@@ -97,6 +98,29 @@ contract MoneyTest is Base {
         uint256 c1 = hook.chest(id, 1);
         assertApproxEqRel(c0, c1, 0.2e18, "within 20% at a price near 1");
         assertSolvent(nobody());
+    }
+
+    /// A trade must swap its whole order: the fee part taken before the swap counts all of it, so a trade its price
+    /// limit stops early is refused rather than charged on what never traded (swarm audit 2026-10-27, finding 1). 100
+    /// IMD in with the price allowed to move 0.001%: only about 10 would fill.
+    function test_aTradeStoppedByItsPriceLimitIsRefused() public {
+        uint256 before = currency0.balanceOfSelf();
+        vm.expectRevert(); // PartialFill, wrapped by the pool manager
+        swapRouter.swap(pool, SwapParams(true, -100e18, SQRT_PRICE_1_1 * 99_999 / 100_000), PoolSwapTest.TestSettings(false, false), "");
+        assertEq(currency0.balanceOfSelf(), before, "nothing paid");
+        swapRouter.swap(pool, SwapParams(true, -1e18, SQRT_PRICE_1_1 * 99_999 / 100_000), PoolSwapTest.TestSettings(false, false), "");
+        assertEq(claims(currency0), 5e15, "a trade that fits inside its limit goes through, at 0.5%");
+    }
+
+    /// Exact output with the chest share in the output (the specified side, taken before the swap): the trader gets
+    /// exactly what it asked for and the full-fill check counts the fee the pool swapped on top.
+    function test_exactOutputWithTheChestShareInTheOutput() public {
+        trade(1, 1e18, address(0)); // chest 0 now holds more: the next chest share goes to chest 1
+        next(12);
+        uint256 before = currency1.balanceOfSelf();
+        swap(pool, true, 1e18, ""); // exact output of 1 currency1
+        assertEq(currency1.balanceOfSelf() - before, 1e18, "exactly what was asked for");
+        assertEq(hook.chest(id, 1), 4e15, "0.4% of the output, taken before the swap");
     }
 
     function test_exactOutputPaysTheFeeOnTheInput() public {

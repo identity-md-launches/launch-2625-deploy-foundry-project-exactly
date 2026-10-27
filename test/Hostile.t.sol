@@ -81,16 +81,15 @@ contract HostileTest is Base {
         deployFreshManagerAndRouters();
     }
 
-    /// A pool of `t` against a plain token, with liquidity, and the hook (neither is IMD or $IMDUEL).
+    /// A pool of `t` against the hook's IMD (every duel needs a route for its slice), with liquidity.
     function pairWith(MockERC20 t) internal {
-        MockERC20 q = new MockERC20("Plain", "PLN", 18);
+        MockERC20 q = deployHookAside(v5());
         for (uint256 i; i < 2; i++) {
             MockERC20 x = i == 0 ? t : q;
             x.mint(address(this), 1e30);
             x.approve(address(swapRouter), type(uint256).max);
             x.approve(address(modifyLiquidityRouter), type(uint256).max);
         }
-        deployHookAside(v5());
         t.approve(address(hook), type(uint256).max);
         (Currency c0, Currency c1) = address(t) < address(q)
             ? (Currency.wrap(address(t)), Currency.wrap(address(q)))
@@ -223,8 +222,7 @@ contract HostileTest is Base {
 
     function test_feeOnTransferTokenFundsOnlyWhatArrives() public {
         SkimToken t = new SkimToken(); // no liquidity: the test routers can't settle a fee-on-transfer token
-        deployHookAside(v5());
-        MockERC20 q = new MockERC20("Plain", "PLN", 18);
+        MockERC20 q = deployHookAside(v5()); // its IMD: every duel needs a route
         (Currency c0, Currency c1) = address(t) < address(q)
             ? (Currency.wrap(address(t)), Currency.wrap(address(q)))
             : (Currency.wrap(address(q)), Currency.wrap(address(t)));

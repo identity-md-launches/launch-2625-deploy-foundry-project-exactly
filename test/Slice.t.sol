@@ -235,16 +235,17 @@ contract SliceTest is Base {
         assertLe(profit, 0, "the sandwich doesn't pay");
     }
 
-    /// Trades the main duel to `target` with just the input it needs (a larger input stopped by the price limit would
-    /// pay the hook fee on all of it).
+    /// Trades the main duel to just short of `target` with the input it needs: a trade its price limit stops early
+    /// reverts (PartialFill), so this one swaps all of its input.
     function pushTo(bool zeroForOne, uint160 target) internal {
         (uint160 now_,,,) = manager.getSlot0(main.toId());
         uint128 l = manager.getLiquidity(main.toId());
         uint256 need = zeroForOne
             ? SqrtPriceMath.getAmount0Delta(target, now_, l, true)
             : SqrtPriceMath.getAmount1Delta(now_, target, l, true);
-        need = need * 1_000_000 / 997_000 * 1_000_000 / 995_000 * 10_001 / 10_000; // LP fee, hook fee, a hair more
-        swapRouter.swap(main, SwapParams(zeroForOne, -int256(need), target), PoolSwapTest.TestSettings(false, false), "");
+        need = need * 1_000_000 / 997_000 * 1_000_000 / 995_000 * 9_999 / 10_000; // LP fee, hook fee, a hair less
+        swapRouter.swap(main, SwapParams(zeroForOne, -int256(need), zeroForOne ? MIN_PRICE_LIMIT : MAX_PRICE_LIMIT),
+            PoolSwapTest.TestSettings(false, false), "");
     }
 
     function _abs(int256 v) internal pure returns (uint256) {
@@ -283,14 +284,14 @@ contract SliceTest is Base {
         assertEq(hook.pile(imd.toId()), 0.02e18);
     }
 
-    function test_noRoutePilesWait() public {
+    /// A duel whose slice couldn't buy $IMDUEL can't open, so no pile waits for good (swarm audit 2026-10-27, finding 4).
+    function test_noRouteNoDuel() public {
         Currency y = token("Y");
-        PoolKey memory xy = newPool(x, y);
-        Currency s = hook.game(xy.toId()).slice == 0 ? xy.currency0 : xy.currency1;
-        pay(xy, s, 10e18);
-        assertEq(hook.pile(s.toId()), 0.01e18);
-        hook.convert(s);
-        assertEq(hook.pile(s.toId()), 0.01e18, "no route: unchanged");
+        (Currency c0, Currency c1) = sorted(x, y);
+        vm.expectRevert(); // NoRoute, wrapped by the pool manager
+        initPool(c0, c1, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
+        newPool(x, imd); // with a routing side it opens
+        newPool(x, duel);
     }
 
     function test_anyoneCanConvert() public {

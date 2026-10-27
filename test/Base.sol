@@ -52,10 +52,11 @@ abstract contract Base is Chessboard, Deployers {
         return HookConfig(manager, e, imd, 0, 0, IHooks(address(0)), NEVER, NEVER, NEVER, turnBlocks());
     }
 
-    /// A hook whose IMD and $IMDUEL are two fresh tokens, their main duel opened (no liquidity): pools of the default
-    /// currencies then route nowhere.
-    function deployHookAside(IChessEngine e) internal {
-        Currency a = Currency.wrap(address(new MockERC20("IMD", "IMD", 18)));
+    /// A hook whose IMD and $IMDUEL are two fresh tokens, their main duel opened (no liquidity), so the default
+    /// currencies route nowhere and can't open a duel. Returns its IMD, for pairing other tokens with.
+    function deployHookAside(IChessEngine e) internal returns (MockERC20 imd) {
+        imd = new MockERC20("IMD", "IMD", 18);
+        Currency a = Currency.wrap(address(imd));
         Currency b = Currency.wrap(address(new MockERC20("IMDUEL", "IMDUEL", 18)));
         deployHook(config(e, a));
         (Currency c0, Currency c1) = a < b ? (a, b) : (b, a);

@@ -274,6 +274,29 @@ contract SliceTest is Base {
         assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), 0.1e18 - 10 * MIN, "the rest waits");
     }
 
+    /// An ETH batch whose route leg buys nothing (no liquidity near the IMD / ETH price) leaves the ETH waiting and
+    /// swaps nothing in the main duel; asked directly, convert returns (swarm audit 2026-10-27, second job, finding 1).
+    function test_anEthBatchWithAnEmptyRouteWaits() public {
+        deployFreshManagerAndRouters();
+        (imd, duel, x) = (token("IMD"), token("IMDUEL"), token("X"));
+        HookConfig memory c = config(v5(), imd);
+        (c.minImd, c.minImduel, c.minEth, c.ethFee, c.ethSpacing) = (MIN, MIN, MIN, 3000, 60);
+        deployHook(c);
+        main = newPool(imd, duel);
+        manager.initialize(PoolKey(CurrencyLibrary.ADDRESS_ZERO, imd, 3000, 60, IHooks(address(0))), SQRT_PRICE_1_1); // empty
+        (PoolKey memory ethX,) = initPool(CurrencyLibrary.ADDRESS_ZERO, x, IHooks(address(hook)), 3000, SQRT_PRICE_1_1);
+        vm.deal(address(this), 1e30);
+        modifyLiquidityRouter.modifyLiquidity{value: 1e27}(ethX, ModifyLiquidityParams(-887220, 887220, 1e24, 0), "");
+        swapNativeInput(ethX, true, -10e18, "", 10e18); // slice 0.01 ETH, over the minimum: a batch runs and buys nothing
+        uint256 waiting = hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId());
+        assertEq(waiting, 0.01e18, "the ETH waits");
+        hook.convert(CurrencyLibrary.ADDRESS_ZERO);
+        assertEq(hook.pile(CurrencyLibrary.ADDRESS_ZERO.toId()), waiting, "asked directly: nothing to buy, nothing lost");
+        PoolKey[] memory pools = new PoolKey[](2);
+        (pools[0], pools[1]) = (main, ethX);
+        assertSolvent(CurrencyLibrary.ADDRESS_ZERO, pools, nobody());
+    }
+
     function test_aFailedConversionNeverBreaksATrade() public {
         deploy(true); // the main duel has no liquidity: a batch can't buy anything
         PoolKey memory duelX = newPool(x, imd);

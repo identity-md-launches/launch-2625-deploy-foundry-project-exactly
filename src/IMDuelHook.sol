@@ -466,7 +466,8 @@ contract IMDuelHook is IUnlockCallback {
         uint160 limit = uint160(
             zeroForOne ? from * (10_000 - BATCH_SQRT_BPS) / 10_000 : from * (10_000 + BATCH_SQRT_BPS) / 10_000
         );
-        if (zeroForOne ? limit >= sqrtPrice : limit <= sqrtPrice) return (0, 0);
+        // nothing to swap (an ETH batch whose route leg bought no IMD), or the price already past the limit: no swap
+        if (amountIn == 0 || (zeroForOne ? limit >= sqrtPrice : limit <= sqrtPrice)) return (0, 0);
         BalanceDelta d = manager.swap(key, SwapParams(zeroForOne, -int256(amountIn), limit), "");
         (int128 inDelta, int128 outDelta) = zeroForOne ? (d.amount0(), d.amount1()) : (d.amount1(), d.amount0());
         spent = uint256(uint128(-inDelta));
@@ -603,8 +604,10 @@ contract IMDuelHook is IUnlockCallback {
     }
 
     /// The move the side to move will play, exactly as the next trade will play it, given the hash `h` of its window's
-    /// last block: fixed as soon as that block is in, which is before the chain can read the hash itself (false while
-    /// the window still takes bids, or without a bid). A view for the site to show each move as soon as it is fixed.
+    /// last block: fixed as soon as that block is complete, which is before the chain can read the hash itself (false
+    /// before that block, or without a bid). A view for the site to show each move as soon as it is fixed: called at the
+    /// latest block, it runs after all of that block's trades. A caller inside the closing block itself gets an answer
+    /// a later trade in that block can still change (it can still take the top bid).
     function previewMove(PoolId id, bytes32 h) external view returns (bool ready, uint16 move) {
         Game storage g = games[id];
         TopBid memory b = g.bids[teamOf(g.slice, g.gameNo, g.ply & 1 == 1)];

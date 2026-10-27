@@ -32,8 +32,8 @@ contract IMDuelHarness is IMDuelHook {
         IMDuelHook(c.manager, c.engine, c.imd, c.ethFee, c.ethSpacing, c.ethHooks, c.minImd, c.minEth, c.minImduel, c.turnBlocks)
     {}
 
-    /// Suites written before the opening surcharge trade right after a pool opens and expect the plain fee; the
-    /// surcharge's own tests and the invariant suites switch it on (the real hook always has it).
+    /// Suites written before the opening surcharge trade right after the main duel opens and expect the plain fee;
+    /// the surcharge's own tests and the invariant suites switch it on (the real hook always has it).
     bool public opening;
 
     function setOpening(bool on) external {

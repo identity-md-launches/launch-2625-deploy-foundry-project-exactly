@@ -44,26 +44,35 @@ contract MoneyTest is Base {
         assertEq(claims(currency0), 5e15);
     }
 
-    /// Against snipers: a pool's chest share starts 25% higher when it opens and falls to the plain 0.4% over five
-    /// minutes, all of it to the chest. Three duels opened together, each traded once at a different age.
-    function test_openingSurchargeFallsToNothingInFiveMinutes() public {
+    /// Against snipers at launch: the main duel's chest share starts 25% higher when it opens and falls to the plain
+    /// 0.4% over five minutes, all of it to the chest. A duel opened later pays the plain 0.4% from its first trade,
+    /// opened alongside the main duel or minutes after it.
+    function test_openingSurchargeOnlyInTheMainDuel() public {
         hook.setOpening(true);
-        uint256 opened = vm.getBlockTimestamp();
+        PoolKey memory main = pool;
+        uint256 opened = vm.getBlockTimestamp(); // the main duel opened in setUp
         uint24[3] memory fees = [uint24(100), 500, 1_000];
         uint256[3] memory ages = [uint256(0), 150, 300];
         uint256[3] memory bps = [uint256(2_540), 1_290, 40];
         PoolKey[] memory ks = new PoolKey[](4);
-        ks[3] = pool; // the main duel: its chests and the shared pile count in the books too
-        for (uint256 i; i < 3; i++) {
-            (ks[i],) = initPool(currency0, currency1, IHooks(address(hook)), fees[i], SQRT_PRICE_1_1);
-            addLiquidity(ks[i]);
-        }
+        ks[3] = main;
+        uint256 before;
         for (uint256 i; i < 3; i++) {
             vm.warp(opened + ages[i]);
             vm.roll(vm.getBlockNumber() + 1);
+            // the main duel at this age: its first trade fills chest 0 from currency0, so later ones go to chest 1
+            // (worth less) from currency1, both taken from the input
+            (pool, id) = (main, main.toId());
+            (uint256 team, uint256 chestIdx) = i == 0 ? (1, 0) : (0, 1);
+            before = hook.chest(id, chestIdx);
+            trade(team, 1e18, address(0));
+            assertEq(hook.chest(id, chestIdx) - before, 1e18 * bps[i] / 10_000, "the main duel's chest share at this age");
+            // a duel opened now: no surcharge, even in the main duel's opening minutes
+            (ks[i],) = initPool(currency0, currency1, IHooks(address(hook)), fees[i], SQRT_PRICE_1_1);
+            addLiquidity(ks[i]);
             (pool, id) = (ks[i], ks[i].toId());
-            trade(1, 1e18, address(0)); // both chests empty: chest 0 takes its share of the input
-            assertEq(hook.chest(id, 0), 1e18 * bps[i] / 10_000, "the chest share at this age");
+            trade(1, 1e18, address(0));
+            assertEq(hook.chest(id, 0), 4e15, "another duel pays the plain 0.4%");
         }
         assertSolvent(currency0, ks, nobody());
         assertSolvent(currency1, ks, nobody());

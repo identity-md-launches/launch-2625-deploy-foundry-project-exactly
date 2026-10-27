@@ -55,8 +55,9 @@ contract IMDuelHook is IUnlockCallback {
 
     // ---------------------------------------------------------------- money
     uint256 public constant CHEST_BPS = 40;
-    // against snipers: for OPENING seconds after a pool opens its chest share starts OPENING_BPS higher and falls to
-    // normal; the extra goes to the chest like the rest (time only: nothing counts wallets)
+    // against snipers at launch: for OPENING seconds after the main duel opens its chest share starts OPENING_BPS higher
+    // and falls to normal; the extra goes to the chest like the rest (time only: nothing counts wallets). Other duels
+    // never pay it
     uint256 public constant OPENING = 300;
     uint256 public constant OPENING_BPS = 2_500;
     uint256 public constant SLICE_BPS = 10;
@@ -93,7 +94,7 @@ contract IMDuelHook is IUnlockCallback {
         uint32 turnStart; // when the side to move got the turn
         uint40 closeBlock; // the last block the side to move's move can be bid for in: the dice are its hash
         bool main; // the main duel
-        uint32 opened; // when the pool opened (the opening surcharge runs for OPENING seconds from it)
+        uint32 opened; // when the main duel opened (its opening surcharge runs for OPENING seconds); 0 in other duels
         // each team's top bid for its next move (by team: 0 currency0's, 1 currency1's); the side to move's is the
         // move being bid for now. Played bids keep their fields (a flag, not zeroes, so the next bid rewrites warm
         // storage)
@@ -230,14 +231,14 @@ contract IMDuelHook is IUnlockCallback {
         _onlyManager();
         PoolId id = key.toId();
         Game storage g = games[id];
-        (g.live, g.opened) = (true, uint32(block.timestamp));
+        g.live = true;
         (Currency c0, Currency c1) = (key.currency0, key.currency1);
         if (imduel.isAddressZero()) {
             // the first pool is the main duel: it must pair IMD with a token, $IMDUEL (else the opening reverts)
             Currency token = c0 == imd ? c1 : c0;
             if (!(c0 == imd || c1 == imd) || token.isAddressZero()) revert BadConfig();
             (imduel, mainFee, mainSpacing, mainId) = (token, key.fee, key.tickSpacing, id);
-            g.main = true;
+            (g.main, g.opened) = (true, uint32(block.timestamp));
             emit MainDuel(id, token);
         }
         // the slice is taken in the side it converts from most simply: IMD, then $IMDUEL, then native ETH
@@ -300,11 +301,11 @@ contract IMDuelHook is IUnlockCallback {
         return int128(int256(fee));
     }
 
-    /// The chest share in basis points: CHEST_BPS, plus the opening surcharge falling from OPENING_BPS to nothing over
-    /// the pool's first OPENING seconds.
+    /// The chest share in basis points: CHEST_BPS, plus, in the main duel only, the opening surcharge falling from
+    /// OPENING_BPS to nothing over its first OPENING seconds.
     function _chestBps(Game storage g) internal view virtual returns (uint256) {
         uint256 age = block.timestamp - g.opened;
-        return age >= OPENING ? CHEST_BPS : CHEST_BPS + OPENING_BPS * (OPENING - age) / OPENING;
+        return !g.main || age >= OPENING ? CHEST_BPS : CHEST_BPS + OPENING_BPS * (OPENING - age) / OPENING;
     }
 
     /// The chest worth less at the pool's price (0 or 1), so the fee keeps both chests about equal.
